@@ -8,59 +8,55 @@ from pathlib import Path
 import ollama
 from ollama._types import ListResponse
 
+
 class TranslationMaster:
     def __init__(self, model_name: str = "deepseek-r1:8b", logging_path: str = None):
+        """
+        Initialize the TranslationMaster with a specific model and logging path.
+        """
         self.model_name = model_name
-        # Use a provided logging directory or the current directory for logs
+        # Use provided logging directory or default to the current working directory.
         self.logging_path = logging_path if logging_path else os.getcwd()
-
-        # Create the logging directory if it doesn't exist
         Path(self.logging_path).mkdir(parents=True, exist_ok=True)
-
         self.setup_logging()
 
     def setup_logging(self):
-        # Get current date for the log filename
-        date = datetime.datetime.now().strftime("%Y-%m-%d")
-        # Find existing log files with today's date in the logging path
-        log_files = [f for f in os.listdir(self.logging_path) if f.endswith(".log") and date in f]
+        """
+        Sets up logging to both file and console.
+        Log file names include the current date and a counter if multiple runs occur on the same day.
+        """
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        log_files = [f for f in os.listdir(self.logging_path)
+                     if f.endswith(".log") and date_str in f]
         count = len(log_files)
-        log_file = f"translation_run_{date}_{count}.log" if count > 0 else f"translation_run_{date}.log"
-        log_file = os.path.join(self.logging_path, log_file)
+        log_filename = f"translation_run_{date_str}_{count}.log" if count > 0 else f"translation_run_{date_str}.log"
+        log_path = os.path.join(self.logging_path, log_filename)
 
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
+            format="%(asctime)s - %(levelname)s - %(message)s",
             handlers=[
-                logging.FileHandler(log_file),
+                logging.FileHandler(log_path),
                 logging.StreamHandler()
             ]
         )
         self.logger = logging.getLogger(__name__)
 
-    def create_run_directory(self, language: str, output_dir: str, output_dir_name: str = None) -> str:
+    def create_run_directory(self, target_language: str, output_dir: str, output_dir_name: str = None) -> str:
         """
-        Creates a run directory under the specified output directory.
-        The directory name follows the pattern:
-          {current_date}/{language}_{run_count}
+        Creates a unique run directory within the given output directory.
+        Directory naming follows the pattern: run_{name}_{run_count}, where "name" is the target language or a custom name.
         """
-        # Ensure the output directory exists; if not, create it.
-        if not os.path.exists(output_dir):
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        # Use output_dir_name if provided; otherwise use the input directory's basename.
-        base_dir_name = output_dir_name if output_dir_name else os.path.basename(language)
-
-        # Look for existing run directories in output_dir with the same prefix.
-        existing_runs = [d for d in os.listdir(output_dir)
-                         if d.startswith(f"run_{base_dir_name}_") 
-                         and os.path.isdir(os.path.join(output_dir, d))]
-
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        run_name = output_dir_name if output_dir_name else target_language
+        existing_runs = [
+            d for d in os.listdir(output_dir)
+            if d.startswith(f"run_{run_name}_") and os.path.isdir(os.path.join(output_dir, d))
+        ]
         run_count = len(existing_runs) + 1
-        run_dir_name = f"run_{base_dir_name}_{run_count}"
-        run_dir_path = os.path.join(output_dir, run_dir_name)
-        Path(run_dir_path).mkdir(parents=True, exist_ok=True)
-        return run_dir_path
+        run_dir = os.path.join(output_dir, f"run_{run_name}_{run_count}")
+        Path(run_dir).mkdir(parents=True, exist_ok=True)
+        return run_dir
 
     def prompt_ai(self, content: str, target_language: str) -> str:
         """
@@ -69,35 +65,29 @@ class TranslationMaster:
         """
         prompt = f"""
 {content}
-        You are a professional translation AI with expertise in technical texts and code files.
-Your task is to translate the human-readable, natural language text in the file below into {target_language} while preserving its exact formatting, including line breaks, indentation, and spacing.
+You are a professional translation AI with expertise in technical texts and code files.
+Translate the above content into {target_language}, preserving its exact formatting (line breaks, indentation, and spacing).
 Important:
 - Translate only user-facing strings, labels, messages, and display text.
-- Only translate file path or import statements if they mention a wrong language code, you update the code to the one of target language.
-- Ensure that the translated output fits exactly into the original file structure so that it remains a valid code file.
-- Do not include any additional commentary or explanations.
-
+- Translate file path or import statements only if they include a language code error.
+- Ensure the translated output remains a valid code file.
+- Do not include additional commentary or explanations.
 """
         response = ollama.chat(
             model=self.model_name,
             messages=[{"role": "user", "content": prompt}]
         )
         content_response = response["message"]["content"]
-        # Remove any tags that the model might include
+        # Clean up any extraneous tags or formatting added by the model.
         content_response = re.sub(r"<[^>]*>", "", content_response)
-        # Remove ``` from the start and end of the response (if any)
         content_response = re.sub(r"^```", "", content_response)
-        # Remove everything between <think> and </think> tags
         content_response = re.sub(r"<think>.*?</think>", "", content_response, flags=re.DOTALL)
-
-        # Remove any extra newlines at the end
-        content_response = content_response.strip()
-        return content_response
+        return content_response.strip()
 
     def get_all_files(self, input_dir: str):
         """
-        Recursively walks through the input directory and returns a list of tuples:
-        (relative_file_path, absolute_file_path)
+        Recursively collects all files from the input directory.
+        Returns a list of tuples: (relative_file_path, absolute_file_path)
         """
         file_list = []
         for root, _, files in os.walk(input_dir):
@@ -109,14 +99,12 @@ Important:
 
     def replace_language_in_filename(self, filename: str, target_lang: str) -> str:
         """
-        Replace any occurrence of an ISO language code in the filename with target_lang.
-        Searches for a pattern like '_{code}' where code is 2 to 3 letters, either followed by an underscore or at the end.
-        If no such pattern is found, appends _<target_lang> before the extension.
+        Replaces any occurrence of an ISO language code in the filename with the target language code.
+        If no pattern is found, appends the target language code before the file extension.
         """
         name, ext = os.path.splitext(filename)
         pattern = re.compile(r"_[a-zA-Z]{2,3}(?=(_|$))")
         if pattern.search(name):
-            # Replace only the first occurrence of the language code pattern with the target language.
             new_name = pattern.sub(f"_{target_lang}", name, count=1) + ext
         else:
             new_name = f"{name}_{target_lang}{ext}"
@@ -124,9 +112,8 @@ Important:
 
     def save_translation(self, run_dir: str, rel_file_path: str, translated_text: str, target_lang: str):
         """
-        Saves the translated text to the run directory while preserving the relative path.
-        The file is renamed to include the new language code.
-        If a file with the new name already exists, appends a counter to avoid overwriting.
+        Saves the translated text to the run directory while preserving the file’s relative path.
+        The file name is modified to include the target language code.
         """
         original_dir, original_file = os.path.split(rel_file_path)
         new_filename = self.replace_language_in_filename(original_file, target_lang)
@@ -145,28 +132,34 @@ Important:
         self.logger.info(f"Saved translated file to {output_file_path}")
 
     def start_translating(self, input_dir: str, output_dir: str, target_language: str, output_dir_name: str = None):
+        """
+        Main routine: iterates over each file in the input directory,
+        translates it using the AI model, and saves the translated file.
+        """
         self.logger.info(f"Starting translation for files in '{input_dir}' to language '{target_language}'")
         run_dir = self.create_run_directory(target_language, output_dir, output_dir_name)
         self.logger.info(f"Output will be saved to: {run_dir}")
         all_files = self.get_all_files(input_dir)
-        all_content = []
-        last_path = None
+        if not all_files:
+            self.logger.warning(f"No files found in input directory: {input_dir}")
+            return
+
         for rel_path, abs_path in all_files:
             self.logger.info(f"Translating file: {rel_path}")
             try:
                 with open(abs_path, "r", encoding="utf-8") as f:
                     content = f.read()
-                    all_content.append(content)
-                last_path = rel_path
+                translated_text = self.prompt_ai(content, target_language)
+                self.save_translation(run_dir, rel_path, translated_text, target_language)
             except Exception as e:
-                self.logger.error(f"Failed to read file {abs_path}: {str(e)}")
-                continue
-
-        translated_text = self.prompt_ai(all_content, target_language)
-        self.save_translation(run_dir, last_path, translated_text, target_language)
+                self.logger.error(f"Failed to process file {abs_path}: {str(e)}")
         self.logger.info("Translation complete")
 
+
 def ask_for_language() -> str:
+    """
+    Prompt the user for a target language.
+    """
     while True:
         language = input("Enter the target language (ISO alpha-2 code or language name): ").strip()
         if len(language) < 2:
@@ -174,7 +167,11 @@ def ask_for_language() -> str:
             continue
         return language
 
+
 def ask_for_input_dir() -> str:
+    """
+    Prompt the user for a valid input directory.
+    """
     while True:
         input_dir = input("Enter the input directory to translate: ").strip()
         if not os.path.isdir(input_dir):
@@ -182,24 +179,32 @@ def ask_for_input_dir() -> str:
             continue
         return input_dir
 
+
 def pull_model(model_name: str):
-    print(f"Model '{model}' not found. Pulling the model...")
+    """
+    Pulls the specified model using ollama if it is not already installed.
+    """
+    print(f"Model '{model_name}' not found. Pulling the model...")
     try:
-        ollama.pull(model)
+        ollama.pull(model_name)
         print("Model pulled successfully.")
     except Exception as e:
-        # Does the model exist?
-        print(f"Failed to pull model '{model}': {str(e)}")
+        print(f"Failed to pull model '{model_name}': {str(e)}")
         print("Does the model exist? Make sure the model name is correct.")
-        print("Current installed models:")
         model_list: ListResponse = ollama.list()
         models = model_list["models"]
         available_models = [model["model"] for model in models]
         print(json.dumps(available_models, indent=2))
         exit(1)
 
+
 def get_arguments():
-    parser = argparse.ArgumentParser()
+    """
+    Parses command-line arguments and prompts for missing values.
+    """
+    parser = argparse.ArgumentParser(
+        description="Translation Master: Translate technical text and code files while preserving formatting."
+    )
     parser.add_argument("--language", help="The target language for translation", type=str, required=False)
     parser.add_argument("--input_dir", help="The input directory to translate", type=str, required=False)
     parser.add_argument("--output_dir", help="The base output directory to save translations", type=str, required=False)
@@ -211,14 +216,14 @@ def get_arguments():
 
     language = args.language if args.language else ask_for_language()
     input_dir = args.input_dir if args.input_dir else ask_for_input_dir()
-    # Default to a directory named "output" in the current working directory if not provided.
-    date = datetime.datetime.now().strftime("%Y-%m-%d")
-    output_dir = args.output_dir if args.output_dir else os.path.join(os.getcwd(), "output", date)
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    output_dir = args.output_dir if args.output_dir else os.path.join(os.getcwd(), "output", date_str)
     output_dir_name = args.output_dir_name if args.output_dir_name else None
     model = args.model if args.model else "gemma3:1b"
-    logging_path = args.logging_path if args.logging_path else os.getcwd() + "/logs"
+    logging_path = args.logging_path if args.logging_path else os.path.join(os.getcwd(), "logs")
 
     return language, input_dir, output_dir, output_dir_name, model, logging_path, args.pull
+
 
 if __name__ == "__main__":
     target_language, input_dir, output_dir, output_dir_name, model, logging_path, auto_pull = get_arguments()
@@ -227,18 +232,17 @@ if __name__ == "__main__":
         print("Please enter a valid language code or name.")
         exit(1)
 
-    # Check if the model is available
     model_list: ListResponse = ollama.list()
     models = model_list["models"]
-    available_models = [model["model"] for model in models]
+    available_models = [m["model"] for m in models]
 
     if model not in available_models:
         if auto_pull:
             pull_model(model)
         else:
-            print(f"Model '{model}' is not installed. Please choose from the following models:")
+            print(f"Model '{model}' is not installed. Available models:")
             print(json.dumps(available_models, indent=2))
-            print(f"Run 'ollama pull {model}' to install new models. Or pass the '--pull' flag to automatically install the model.")
+            print(f"Run 'ollama pull {model}' to install new models, or pass the '--pull' flag to automatically install the model.")
             exit(1)
 
     master = TranslationMaster(model_name=model, logging_path=logging_path)
